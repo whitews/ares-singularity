@@ -1,0 +1,6 @@
+lightning_logs/*
+.idea
+.ipynb_checkpoints
+*.sif
+*.ipynb
+*.csv
