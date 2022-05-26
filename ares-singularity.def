@@ -1,0 +1,153 @@
+Bootstrap: docker
+From: ubuntu:20.04
+
+%environment
+  export PYTHONPATH=/opt/lib/python
+
+%post
+  export DEBIAN_FRONTEND=noninteractive
+
+  # install ubuntu updates
+  apt update -qq --yes
+  apt upgrade -qq --yes
+
+  # INITIAL NOTES:
+  # This recipe was very carefully assembled after a good deal of
+  # dependency forensic work to determine which versions would have
+  # been available at the time ARES was developed.
+  #
+  # ARES code was uploaded to Zenodo on July 10, 2021, which means
+  # they used torch_geometric <= 1.7.1
+  #
+  # The torch_geometric 1.7.1 docs indicate the use of torch 1.4.0
+  # and torch 1.4.0 supported Python versions: 2.7, 3.5 - 3.8
+  # We'll use Python 3.7 here
+  #
+  # This singularity recipe successfully runs the ARES demo example
+  # on a CPU version of Torch. To get the CUDA version instead of
+  # the CPU version would require a compatible version of CUDA:
+  #   - torch 1.8.1 is compatible with CUDA 10.1, 10.2, 11.1
+
+  # software-properties-common is needed to get the add-apt-repository command
+  apt install -y -qq software-properties-common
+
+  # add curl & unzip to download & unzip the ARES zip from Zenodo
+  apt install -y -qq curl unzip
+
+  # add dead snakes apt repository to get Python 3.7 (20.04 has 3.8 by default)
+  add-apt-repository ppa:deadsnakes/ppa
+  apt update -qq --yes
+
+  # install build tools for compiling a few Python package (freesasa)
+  apt install -y -qq --no-install-recommends build-essential
+
+  # Python specific installs
+  # Install Python 3.7 with distutils & dev for compiling later
+  # Install python-is-python3 to set Python 3 as default python
+  #   (will overwrite the symlink next)
+  # Install pip
+  apt install -y --no-install-recommends python3.7 python3.7-distutils python3.7-dev
+  apt install -y --no-install-recommends python-is-python3 \
+    python3-setuptools \
+    python3-pip
+
+  # Make Python 3.7 the default
+  ln -fs /usr/bin/python3.7 /usr/bin/python3
+
+  # Pinning down a couple requirements here in case
+  # future versions of these break something
+  pip install --no-cache-dir numpy==1.21.6
+  pip install --no-cache-dir scipy==1.7.3
+  pip install --no-cache-dir networkx==2.6.3
+  pip install --no-cache-dir pandas==1.3.5
+  pip install --no-cache-dir scikit-learn==1.0.2
+  pip install --no-cache-dir python-louvain==0.16
+
+  # Looking through the docs in the torch geometric repo around 2021,
+  # they used torch 1.4 for quite a long time. Then, they jumped to
+  # torch 1.9 in June 2021.
+  #
+  # However, torch 1.4 causes issues with the modified e3nn code
+  # later on. Updating to 1.8.1 (released March 2021), as it seems
+  # likely the ARES devs would have used something around that date.
+  #
+  # Set vars for torch version and type
+  export TORCH="1.8.1"
+  export CUDA="+cpu"
+  pip install --no-cache-dir torch==${TORCH} --extra-index-url https://download.pytorch.org/whl/cpu
+
+  # Start installing torch related dependencies, pinning these as later versions
+  # will force an update of torch
+  pip install --no-cache-dir torchvision==0.9.1 --extra-index-url https://download.pytorch.org/whl/cpu
+  pip install --no-cache-dir torchaudio==0.8.1 --extra-index-url https://download.pytorch.org/whl/cpu
+
+  # torch geo docs use scatter 2.0.4 & sparse 0.6.1
+  # but the wheels for torch 1.8.1 have:
+  #   scatter==2.0.7 (released June 2021)
+  #   sparse==0.6.10 (released June 2021)
+  pip install --no-cache-dir torch-scatter==2.0.7 -f https://pytorch-geometric.com/whl/torch-${TORCH}${CUDA}.html
+  pip install --no-cache-dir torch-sparse==0.6.10 -f https://pytorch-geometric.com/whl/torch-${TORCH}${CUDA}.html
+
+  # Now we move on to the e3nn reqs, where cluster & spline-conv come into play
+  # torch geometric is also a requirement of e3nn
+  # Interesting to note that around this time (Apr 2021) e3nn docs are using torch 1.8
+  # However, the versions of these aren't pinned down, so we don't know exactly what the
+  # ARES devs may have used. But, the torch 1.8 pip repo has the latest versions as:
+  #   cluster==1.5.9
+  #   spline-conv==1.2.1
+  pip install --no-cache-dir torch-cluster==1.5.9 -f https://pytorch-geometric.com/whl/torch-${TORCH}${CUDA}.html
+  pip install --no-cache-dir torch-spline-conv==1.2.1 -f https://pytorch-geometric.com/whl/torch-${TORCH}${CUDA}.html
+
+  # Now we can install torch_geometric
+  pip install --no-cache-dir torch_geometric==1.7.1
+
+  # For torch lightning, we can't pip install w/o specifying a version or it will
+  # attempt to update our torch version and ruin all the work we've done so far.
+  # Looks like they would have been using something in the 1.3 series of releases.
+  # We'll use 1.3.6 (released June 17 2021)
+  #
+  # lightning also has loose requirements for torchmetrics (uses >=0.2.0). This
+  # causes problems b/c some calls used by lightning are no longer available in
+  # torchmetrics. FYI, the torchmetrics version that got installed for me if I
+  # didn't pin the version was 0.8.2 and it didn't work.
+  pip install --no-cache-dir torchmetrics==0.3.2
+  pip install --no-cache-dir pytorch-lightning==1.3.6
+
+  # The following didn't need pinned versions, but I'm pinning what worked here
+  # in case future versions of these break something
+  pip install --no-cache-dir python-dotenv==0.20.0
+  pip install --no-cache-dir wandb==0.12.16
+  pip install --no-cache-dir atom3d==v0.2.4
+
+  # pymatgen did cause problems, so need to pre-pin the version
+  # before installing the modified e3nn setup
+  pip install --no-cache-dir pymatgen==2021.3.9
+
+  # Finally we can install the modified e3nn package provided by the ARES devs.
+  # I don't know why the ARES devs created this fork or what they changed, but
+  # trying any of the official e3nn releases wouldn't work for me.
+  pip install --no-cache-dir "https://zenodo.org/record/5090151/files/e3nn_ares.zip"
+
+  # Install jupyter
+  pip install jupyter==1.0.0
+
+  # The final step is to download the ARES code & example data
+  # We'll install the scripts in /opt/lib/python & update the
+  # the PYTHONPATH.
+  #
+  # The example data we'll move to /ares/
+  export PYTHONPATH=/opt/lib/python
+  mkdir -p $PYTHONPATH
+  mkdir /ares
+  cd /ares
+  curl -O -J -L "https://zenodo.org/record/5088971/files/ares_release.zip"
+  unzip ares_release.zip
+  mv ares_release/ares $PYTHONPATH
+  mv ares_release/data .
+  rm ares_release.zip
+  rm -rf ares_release
+
+%runscript
+  echo "Starting Jupyter..."
+  echo "Open browser to localhost:8888"
+  exec jupyter notebook --ip='*' --port=8888 --no-browser --allow-root
